@@ -1,0 +1,607 @@
+---
+title: "RMarkdown Code file"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+------------------------------------------------------------------------
+
+## Setup
+
+This is an R Markdown document that shows all code we used to clean, analysis, and exhibits the data in our term-paper. All the code chunk has been set to eval=FALSE, to prevent auto-operating.
+
+```{r setwd,eval = FALSE}
+# Set working Directory
+setwd("~/Desktop/group term paper")
+```
+
+------------------------------------------------------------------------
+
+## Import the COVID Data
+
+*The COVID data is download from [\<https://raw.githubusercontent.com/OxCGRT/covid-policy-tracker/master/data/OxCGRT_latest_combined.csv\>](https://raw.githubusercontent.com/OxCGRT/covid-policy-tracker/master/data/OxCGRT_latest_combined.csv){.uri}, air quality data in 2019-2020 and site list updated in 2021 is used.*
+
+### Prepare the COVID Data
+
+Import the raw data, keep only data in Chinese cities. This block will only be ran by one time. And then we will use the saved data file "oxdta.csv" afterwards in order to save time and simplifies the workload.
+
+```{r subset COVID data,eval = FALSE}
+library(readr)
+oxdta <- read_csv("OxCGRT_latest_combined.csv",show_col_types = FALSE)
+# keep only Chinese cities, with info and index columns.
+oxdta <- oxdta[which(oxdta$CountryName=="China"),c(1:6,41,45)]
+#save oxdta to save time in next manipulation
+write_csv(oxdta,file="oxdta.csv")
+```
+
+### Load the COVID Data
+
+read file "oxdta.csv" we saved before.
+
+```{r load oxdta,eval = FALSE}
+library(readr)
+library(data.table)
+oxdta <- as.data.table(read_csv("oxdta.csv",show_col_types = FALSE))
+```
+
+------------------------------------------------------------------------
+
+## Import the Air Quality Data
+
+*Data site: <https://quotsoft.net/air/>*
+
+### Prepare Air data
+
+1.  **Loop to Read Air Quality Data**
+
+    We have the site lists and daily air quality data in two years (2019-2020) from the source as raw data. We first create a sequence of dates which is the range of daily data we need, and then use it as i in the loop to read the files by each day. In the process, we only keep the 6 types, since we only wants the average 24h levels of pollutants and AQI, which are the 6 metrics in measuring the air quality. And correspondingly, only one moment data is needed. We choose hours = 12 for convenience.
+
+```{r loop read airdta,eval = FALSE}
+# create a list of dates that we want to cover, depends on the specific time bandwidth 
+dte <- format(seq(as.Date("2019-05-29"), as.Date("2020-12-31"), by="days"),format="%Y%m%d")
+
+# import the data files
+airdta <- data.table()
+for (i in dte){
+  # subset data with hour=12 and type within only AQI and 24 average pollutant level.
+  newdta <- as.data.table(read_csv(paste0("sites.nosync/china_sites_",i,".csv"),show_col_types = FALSE))[hour==12][type %in% c("AQI","PM2.5_24h","PM10_24h","SO2_24h","NO2_24h","CO_24h")] 
+  airdta <- rbind(airdta,newdta,fill=TRUE)
+}
+save(airdta,file="airdta.Rdata")
+```
+
+2.  **Deal with Missing Dates**
+
+    Check missing dates, and fill the blank with data of the day before.
+
+```{r fill NA dates,eval = FALSE}
+
+# read air data
+load("airdta.Rdata")
+
+# Check missing dates
+mislist <- vector()
+for (i in dte){
+  if (i %in% airdta$date) {
+    next
+  } else{
+    mislist <- append(mislist,i)
+  }
+}
+
+# View missing dates
+list(mislist)
+length(mislist)
+
+# fill the missing dates with data of t-1
+for(i in mislist){
+  # copy t-1 values. Directly use math method no 1st day in missing dates.
+  apnd <- airdta[which(airdta$date==as.numeric(i)-1),]
+  # change the date
+  apnd$date <- i
+  airdta <- rbind(airdta,apnd)
+}
+
+# checks for missing dates again
+nrow(airdta)/6==length(dte) # should return TRUE
+
+save(airdta,file="airdta.Rdata")
+```
+
+3.  **Calculate the Pollutants' Value by City**
+
+    *For the correlation between sites and cities, we reference the file "sitelist2021" from <https://quotsoft.net/air/>*
+
+    Firstly we import site list. Rearrange the data by switching columns and rows, with new heads as:
+
+    +:----:+:----:+:---:+:---------:+:--------:+:-------:+:-------:+:------:+
+    | date | city | AQI | PM2.5_24h | PM10_24h | SO2_24h | NO2_24h | CO_24h |
+    +------+------+-----+-----------+----------+---------+---------+--------+
+
+    Then pair the sites to cities, calculate the average pollutants by city and combine the new data together, save as file=airavg.Rdata for further use.
+
+```{r avg city, eval=FALSE}
+
+load('airdta.Rdata')
+
+# import site list
+library(readr)
+sitelist <- as.data.frame(read_csv("siteslist2021.csv",show_col_types = FALSE))[,c(1,3)]
+
+# change row names in English
+names(sitelist) <- c("site", "city_CH")
+
+# prepare empty data frame
+airavg <-data.frame() 
+
+# copy dte from previous chunk
+dte <- format(seq(as.Date("2019-05-29"), as.Date("2020-12-31"), by="days"),format="%Y%m%d")
+
+# loop each dates
+for (i in dte){
+
+  # prepare empty temporary data frame
+  temp <- data.frame()
+  
+  #transform the table from columns to rows
+  temp <- as.data.frame(t(
+    rbind("r"=c("site",names(airdta)[-c(1,2,3)]),
+          airdta[which(airdta$date==as.numeric(i)),][,c(-1,-2)])
+    ))[-1,]
+  
+  # rename the columns
+  names(temp) <- c('site','AQI','PM2.5_24h','PM10_24h','SO2_24h','NO2_24h','CO_24h')
+  
+  # add the date column with current loop value i
+  temp <- cbind(temp,"date"=i)
+  
+  # pair cities with sites
+  temp <- merge(temp,sitelist,all.x=TRUE)
+
+  # create distinct city list in temp$city_CH
+  citylist <- unique(temp$city_CH)
+  
+  for (i in citylist){
+  
+    # slice temp by city
+    m <- temp[which(temp$city_CH==i),]
+    
+    # calculate mean by city, form 1 row data
+    temp1 <- data.frame(
+      "city_CH"=i,
+      "AQI"=mean(as.numeric(m$AQI),na.rm=TRUE),
+      "PM2.5_24h"= mean(as.numeric(m$PM2.5_24h),na.rm=TRUE),
+      "PM10_24h"=mean(as.numeric(m$PM10_24h),na.rm=TRUE),
+      "SO2_24h"=mean(as.numeric(m$SO2_24h),na.rm=TRUE),
+      "NO2_24h"=mean(as.numeric(m$NO2_24h),na.rm=TRUE),
+      "CO_24h"=mean(as.numeric(m$CO_24h),na.rm=TRUE),
+      "date"=as.numeric(m$date)[1]
+    )
+    
+    # combine in airavg
+    airavg <- rbind(airavg,temp1)
+  }
+
+}
+save(airavg,file="airavg.Rdata")
+
+```
+
+4.  **Combine COVID Data with Air Data** Combine COVID data with air quality data, pair key index airavg\$province=oxdta\$region name *This step was conducted in python. Code was shown below.* Match the cities in airavg with province.
+
+```{python match province, eval=FALSE}
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Oct 23 18:00:46 2021
+
+@author: jcgss
+"""
+
+# =============================================================================
+# Now we try to match all the data based on province
+# =============================================================================
+#Now I locate my file position
+import re, os
+import pandas as pd
+import glob
+
+os.chdir('C:/Users/jcgss/OneDrive/Desktop/Master of Economics/Sem1/Econ 6067 2pm to 5pm Tuesday CP4- LTA/Final Project/1023')
+csv_path= os.getcwd()
+csv_path
+csv_files = glob.glob(os.path.join(csv_path, "*.csv"))
+csv_path
+
+#loading data consisting the checking point code and city name
+import pandas as pd
+site_list=pd.read_csv(csv_path+"/siteslist2021(2).csv")
+site_list
+site_list=site_list[["监测点编码","城市"]]
+site_list.to_csv("C:/Users/instemp/Downloads/siteslist2021.csv")
+
+#Loadinf data of chinese city and province
+province=pd.read_csv("C:/Users/instemp/Downloads/city_province.csv")
+
+prov_city = pd.read_csv(csv_path+"/match_cities_province.csv")
+prov_city
+
+#For the data containing province chinese and english from custom
+prov_city_custom = pd.read_excel(csv_path+"/custom.xls")
+prov_city_custom
+
+#Do the cleaning:
+empty_province=[]
+for q in prov_city_custom["北京市"]:
+    head, sep, tail = q.partition("市")
+    empty_province.append(head)
+
+empty_province
+
+prov_city_custom["province"]=empty_province
+prov_city_custom
+    
+ep=[]
+for w in empty_province:
+    head, sep, tail = w.partition("省")
+    ep.append(head)
+
+ep
+prov_city_custom["provincee"]=ep
+prov_city_custom
+
+
+ep_shi=[]
+for q in prov_city_custom["Beijing Shi"]:
+    head, sep, tail = q.partition(" Shi")
+    ep_shi.append(head)
+    
+ep_shi
+prov_city_custom["ep_shi"]=ep_shi
+prov_city_custom
+    
+ep_sheng=[]
+for w in ep_shi:
+    head, sep, tail = w.partition(" Sheng")
+    ep_sheng.append(head)
+
+ep_sheng
+prov_city_custom["ep_sheng"]=ep_sheng
+
+prov_city_custom= prov_city_custom.iloc[:,[4,6]]
+prov_city_custom
+prov_city_custom = prov_city_custom.rename({'provincee': '省', 'ep_sheng': 'RegionName'}, axis=1) 
+
+#Checking stage
+if "Yunnan" in prov_city_custom.values:
+    print("yes")
+else:
+    print("no")
+
+
+#For the one that match with all cities and provinces
+prov_city = pd.read_csv(csv_path+"/match_cities_province.csv")
+#Do the cleaning:
+for i in prov_city["省"]:
+    head, sep, tail = i.partition("市")
+    prov_city["省"].replace({i:head}, inplace = True)
+
+prov_city
+
+for j in prov_city["省"]:
+    head, sep, tail = j.partition("省")
+    prov_city["省"].replace({j:head}, inplace = True)
+    
+#This is the one with 监测点编码, city, province, reformat
+prov_city
+prov_city_group_based_number=prov_city.groupby('监测点编码', as_index=False).first()
+prov_city=prov_city.groupby('城市', as_index=False).first()
+prov_city=prov_city.iloc[:,[0,2]]
+
+#This is the one match chinese and english province name, reformat
+prov_city_custom=prov_city_custom.groupby('省', as_index=False).first()
+prov_city_custom
+
+#Merging the dataset, based on prov_city (the chinese one) and the prov_city(english one)
+prov_chi_eng_match = pd.merge(prov_city,prov_city_custom,on="省")
+prov_chi_eng_match
+#Need another round of cleaning
+pcem=[]
+for q in prov_chi_eng_match["RegionName"]:
+    head, sep, tail = q.partition(" ")
+    pcem.append(head)
+
+prov_chi_eng_match["RegionName"]=pcem
+
+prov_chi_eng_match["RegionName"].replace("Nei","Inner Mongolia", inplace=True)
+prov_chi_eng_match["RegionName"].replace("Xizang","Tibet", inplace=True)
+prov_chi_eng_match["RegionName"].replace("Ningxiahuizu","Ningxi", inplace=True)
+
+prov_chi_eng_match
+
+#Now open the Oxford Data:
+oxford_data= pd.read_csv(csv_path+"/oxdta_yq.csv")
+oxford_data
+
+if "Heilongjiang" in oxford_data.values:
+    print("yes")
+else:
+    print("no")
+
+#Merge the one with englsih and chinese province with the Oxford one
+oxf_prov_match = pd.merge(oxford_data,prov_chi_eng_match,on="RegionName")
+
+
+#Read R data from groupmate
+from fuzzywuzzy import fuzz
+from fuzzywuzzy import process
+import os
+import pandas as pd 
+from rpy2.robjects import r
+from rpy2.robjects import pandas2ri
+import rpy2.robjects as robjects
+from rpy2.robjects import pandas2ri
+import rpy2.robjects as ro
+pandas2ri.activate()
+
+f1=r.load("airavg.Rdata")
+## load .RData and converts to pd.DataFrame
+robj = robjects.r.load('airavg.Rdata')
+# iterate over datasets the file
+for sets in robj:
+    myRData = ro.conversion.rpy2py(r[sets])
+    # convert to DataFrame
+    if not isinstance(myRData, pd.DataFrame):
+        myRData = pd.DataFrame(myRData)
+#Now matching the air_avg data with the one with (chinese and english cities&provinces)
+prov_chi_eng_match = prov_chi_eng_match.rename(columns={'城市': 'city_CH'})
+airq_match = pd.merge(myRData,prov_chi_eng_match,on="city_CH")
+airq_match.to_csv(csv_path+"/airq_match.csv")
+airq_match
+#turning float into int
+Date=[]
+for i in airq_match["Date"]:
+    i=int(i)
+    Date.append(i)
+airq_match["Date"]=Date
+#airq_match = airq_match.rename(columns={'date': 'Date'})
+
+#Now we combine the oxford data with airq_match data based on dates and cities
+new_df = pd.merge(oxford_data, airq_match,  how='left', left_on=["RegionName","Date"], right_on = ["RegionName","Date"])
+new_df.to_csv("Combine_Covid_data_and_Air_data.csv", index=False)
+pd.read_csv("Combine_Covid_data_and_Air_data.csv")
+
+```
+
+5.  **Calculate the Pollutants' Value by Province**
+
+    Calculate the average of province.Form `file='dta.Rdata'` for RDD regression use.
+
+```{r avg province, eval=FALSE}
+
+library('readr')
+# load the matched Combine_Covid_data_and_Air_data from groupmates.
+mtch <- as.data.frame(read_csv("Combine_Covid_data_and_Air_data.csv",show_col_types = FALSE))[,c(-1,-2,-4)]
+
+# get province list
+names(mtch)[13] <- "province"   # rename the province column
+provincelist <- na.omit(unique(mtch$province))  # omit NA (country level COVID data)
+
+# define time range with bandwidth 90 days after lock-down which is the end of January.
+dte1 <- format(seq(as.Date("2020-01-01"), as.Date("2020-09-30"), by="days"),format="%Y%m%d")
+
+# prepare empty data frame
+dta <- data.frame()
+
+# loop to form new average data frame
+for (b in dte1){
+  
+  # prepare empty temporary data frame
+  temp <- data.frame()
+  
+  # subset the table by dates
+  temp <- mtch[which(mtch$Date==as.numeric(b)),]
+   
+  # loop by province
+  for (i in provincelist){
+    
+    # prepare empty temporary data frame
+    temp2 <- data.frame()
+    
+    # subset the table by province
+    temp1 <- temp[which(temp$province==i),]
+    
+    temp2 <- data.frame(
+      "RegionName"=temp1$RegionName[1],
+      "Date"=temp1$Date[1],
+      "StringencyIndex"=temp1$StringencyIndex[1],
+      "province" = i,
+      "AQI"= mean(as.numeric(temp1$AQI),na.rm=TRUE),
+      "PM2.5_24h"= mean(as.numeric(temp1$PM2.5_24h),na.rm=TRUE),
+      "PM10_24h"=mean(as.numeric(temp1$PM10_24h),na.rm=TRUE),
+      "SO2_24h"=mean(as.numeric(temp1$SO2_24h),na.rm=TRUE),
+      "NO2_24h"=mean(as.numeric(temp1$NO2_24h),na.rm=TRUE),
+      "CO_24h"=mean(as.numeric(temp1$CO_24h),na.rm=TRUE)
+    )
+    
+    dta <- rbind(dta,temp2)
+  }
+
+}
+save(dta,file="dta.Rdata")
+```
+
+------------------------------------------------------------------------
+
+## Analysis Using RDD
+
+### Manage `dta.Rdata`
+
+-   Add `dta$treatment` as dummy variable
+-   Transform `dta$date` from numeric to date
+-   Add threshold date difference as `dta$thereshold`
+
+```{r dta, eval=FALSE}
+
+load('dta.Rdata')
+
+# add treatment dummy in dta
+dta <- cbind(dta,"treatment"=ifelse(dta$StringencyIndex==0,0,1))
+
+# trans date form use as.Date
+dta$Date <- as.Date(as.character(dta$Date),format="%Y%m%d")
+
+# add threshold date in dta
+dta <- cbind(dta,"threshold"=as.numeric((dta$Date-as.Date("20200123",format="%Y%m%d"))))
+
+save(dta,file="dta.Rdata")
+```
+
+### Plot the data in Scatter Plot
+
+```{r scatter, results = "asis"}
+
+load('dta.Rdata')
+
+plot(x = dta$threshold, y =dta$PM2.5_24h, type = 'p',
+      xlab = 'days from lockdown', ylab = 'PM2.5_24h')
+abline(v = 0)
+
+```
+
+### The RDD Model
+
+use the cut-point as the day of 2020-01-26, where `dta$threshold=3` as the days after the lock-down day we choose before, when the stringency index doubled from 22 to 44.
+
+```{r rdd, results = "asis"}
+
+# install.packages("rdrobust")
+library('rdrobust')
+AQI <- rdplot(dta$AQI, dta$threshold, c = 3, p = 4,
+               nbins = c(30, 30), binselect = 'qs', kernel = 'uniform',
+              y.label = "AQI",x.label = "Days after lockdown")
+
+PM2.5_24h <- rdplot(dta$PM2.5_24h, dta$threshold, c = 3, p = 4,
+               nbins = c(30, 30), binselect = 'qs', kernel = 'uniform',
+               y.label = "PM2.5_24h",x.label = "Days after lockdown")
+
+PM10_24h <- rdplot(dta$PM10_24h, dta$threshold, c = 3, p = 4,
+               nbins = c(30, 30), binselect = 'qs', kernel = 'uniform',
+               y.label = "PM10_24h",x.label = "Days after lockdown")
+
+SO2_24h <- rdplot(dta$SO2_24h, dta$threshold, c = 3, p = 4,
+               nbins = c(30, 30), binselect = 'qs', kernel = 'uniform',
+               y.label = "SO2_24h",x.label = "Days after lockdown")
+
+NO2_24h <- rdplot(dta$NO2_24h, dta$threshold, c = 3, p = 4,
+               nbins = c(30, 30), binselect = 'qs', kernel = 'uniform',
+               y.label = "NO2_24h",x.label = "Days after lockdown")
+
+CO_24h <- rdplot(dta$CO_24h, dta$threshold, c = 3, p = 4,
+               nbins = c(30, 30), binselect = 'qs', kernel = 'uniform',
+               y.label = "CO_24h",x.label = "Days after lockdown")
+
+
+```
+
+
+```{r mute, include=FALSE}
+
+# plot Y=PM2.5, X=stringency Index
+
+load('dta.Rdata')
+
+plot(x = dta$StringencyIndex, y =dta$PM2.5_24h, type = 'p',
+      xlab = 'Strigency Index', ylab = 'PM2.5_24h')
+abline(lm(dta$PM2.5_24h~dta$StringencyIndex))
+
+
+# plot Y=PM2.5, X=days from lockdown(Threshold)
+dta_temp <- dta[which(dta$threshold<40|dta$PM2.5_24h<100),]
+
+plot(x = dta_temp$threshold, y =dta_temp$PM2.5_24h, type = 'p',
+      xlab = 'days from lockdown', ylab = 'PM2.5_24h')
+abline(lm(PM2.5_24h~threshold,data=dta_temp))
+
+m <- lm(PM2.5_24h~treatment+threshold,data=dta_temp)
+m2 <- lm(PM2.5_24h~threshold,data=dta_temp)
+m3 <- lm(PM2.5_24h~treatment+threshold+treatment*threshold,data=dta_temp)
+library('memisc')
+mtable(m,m2,m3)
+
+
+
+```
+
+
+
+### The OLS model
+
+```{r RDD table, results = "asis"}
+
+load('dta.Rdata')
+dta1 <- dta
+
+plot(x = dta1$threshold, y =dta1$PM2.5_24h, type = 'p',
+      xlab = 'days from lockdown', ylab = 'PM2.5_24h')
+
+
+m1_AQI<- lm(AQI~treatment+threshold+treatment*threshold,data=dta1)
+m2_AQI <- lm(AQI~treatment+threshold,data=dta1)
+
+m1_PM2.5_24h<- lm(PM2.5_24h~treatment+threshold+treatment*threshold,data=dta1)
+m2_PM2.5_24h <- lm(PM2.5_24h~treatment+threshold,data=dta1)
+
+m1_PM10_24h<- lm(PM10_24h~treatment+threshold+treatment*threshold,data=dta1)
+m2_PM10_24h <- lm(PM10_24h~treatment+threshold,data=dta1)
+
+m1_SO2_24h<- lm(SO2_24h~treatment+threshold+treatment*threshold,data=dta1)
+m2_SO2_24h <- lm(SO2_24h~treatment+threshold,data=dta1)
+
+m1_NO2_24h<- lm(NO2_24h~treatment+threshold+treatment*threshold,data=dta1)
+m2_NO2_24h <- lm(NO2_24h~treatment+threshold,data=dta1)
+
+m1_CO_24h<- lm(CO_24h~treatment+threshold+treatment*threshold,data=dta1)
+m2_CO_24h <- lm(CO_24h~treatment+threshold,data=dta1)
+
+stargazer::stargazer(m1_AQI,m2_AQI,m1_PM2.5_24h,m2_PM2.5_24h,m1_PM10_24h,m2_PM10_24h,m1_SO2_24h,m2_SO2_24h,m1_NO2_24h,m2_NO2_24h,m1_CO_24h,m2_CO_24h, type = 'html', style = 'all')
+
+
+# omit the outliers.
+
+dta2 <- dta1[which(dta1$threshold<40|dta1$PM2.5_24h<100),]
+plot(x = dta2$threshold, y =dta2$PM2.5_24h, type = 'p',
+      xlab = 'days from lockdown', ylab = 'PM2.5_24h')
+
+m1_AQI<- lm(AQI~treatment+threshold+treatment*threshold,data=dta2)
+m2_AQI <- lm(AQI~treatment+threshold,data=dta2)
+
+m1_PM2.5_24h<- lm(PM2.5_24h~treatment+threshold+treatment*threshold,data=dta2)
+m2_PM2.5_24h <- lm(PM2.5_24h~treatment+threshold,data=dta2)
+
+m1_PM10_24h<- lm(PM10_24h~treatment+threshold+treatment*threshold,data=dta2)
+m2_PM10_24h <- lm(PM10_24h~treatment+threshold,data=dta2)
+
+m1_SO2_24h<- lm(SO2_24h~treatment+threshold+treatment*threshold,data=dta2)
+m2_SO2_24h <- lm(SO2_24h~treatment+threshold,data=dta2)
+
+m1_NO2_24h<- lm(NO2_24h~treatment+threshold+treatment*threshold,data=dta2)
+m2_NO2_24h <- lm(NO2_24h~treatment+threshold,data=dta2)
+
+m1_CO_24h<- lm(CO_24h~treatment+threshold+treatment*threshold,data=dta2)
+m2_CO_24h <- lm(CO_24h~treatment+threshold,data=dta2)
+
+stargazer::stargazer(m1_AQI,m2_AQI,m1_PM2.5_24h,m2_PM2.5_24h,m1_PM10_24h,m2_PM10_24h,m1_SO2_24h,m2_SO2_24h,m1_NO2_24h,m2_NO2_24h,m1_CO_24h,m2_CO_24h, type = 'html', style = 'all')
+
+```
+
+------------------------------------------------------------------------
+
+*This is the end of the file.*
